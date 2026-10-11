@@ -19,3 +19,14 @@ First all filenames are stored in an array and the longest name is found. Column
 **Q2. What is the purpose of ioctl here? What are the limitations of a fixed 80-column fallback?**
 
 `ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)` asks the terminal driver for the current window size (`ws_col` = number of columns), so the layout adapts to the real terminal width. With a fixed 80-column width, the output would waste space on wide terminals (fewer columns than possible) and would wrap and break the alignment on narrow terminals (lines longer than the screen). It also would not adapt when the user resizes the window.
+
+
+## Feature 4: Horizontal Display -x (v1.3.0)
+
+**Q1. Compare the implementation complexity of "down then across" (vertical) vs "across" (horizontal) printing. Which needs more pre-calculation and why?**
+
+The vertical ("down then across") layout is more complex. Before printing anything it must know the total number of files and the longest name, then compute the number of columns (terminal width / column width) and the number of rows (ceil(count / columns)). Printing then needs nested loops with index arithmetic `names[c * num_rows + r]`, because the next item in the array goes below the current one, not beside it. The horizontal layout is simpler: it only needs the column width and the terminal width, and a single loop that prints each name padded to the column width while tracking the current horizontal position. When the next name would exceed the terminal width, it prints a newline and resets the position. It does not need the row count, so it needs less pre-calculation.
+
+**Q2. Describe the strategy used to manage the different display modes (-l, -x, default). How did the program decide which function to call?**
+
+I used an enum `DisplayMode` with three values: `MODE_DEFAULT`, `MODE_LONG` and `MODE_HORIZONTAL`. The `getopt()` loop in `main` sets this variable when it sees `-l` or `-x` (if both are given, the last one wins). The variable is passed to `do_ls()`. Inside `do_ls()`, if the mode is `MODE_LONG` it calls `do_ls_long()`; otherwise it reads all names into a dynamic array and then calls `display_horizontal()` for `MODE_HORIZONTAL`, or `display_columns()` (down then across) for the default mode.
