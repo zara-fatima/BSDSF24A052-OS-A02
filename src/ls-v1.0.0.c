@@ -1,6 +1,6 @@
 /*
-* Programming Assignment 02: lsv1.1.0
-* Added: -l (long listing format)
+* Programming Assignment 02: lsv1.2.0
+* Added: default multi-column display ("down then across")
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
@@ -18,6 +19,8 @@ extern int errno;
 
 void do_ls(const char *dir, int long_flag);
 void do_ls_long(const char *dir);
+void display_columns(char **names, int count, int maxlen);
+int get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
 const char *user_name(uid_t uid, char *buf);
 const char *group_name(gid_t gid, char *buf);
@@ -56,6 +59,15 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+/* Terminal ki width (columns mein) maloom karo */
+int get_terminal_width(void)
+{
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0)
+        return 80; /* fallback: ioctl fail ho (jaise pipe) to 80 */
+    return w.ws_col;
+}
+
 void do_ls(const char *dir, int long_flag)
 {
     if (long_flag)
@@ -64,29 +76,106 @@ void do_ls(const char *dir, int long_flag)
         return;
     }
 
-    struct dirent *entry;
     DIR *dp = opendir(dir);
     if (dp == NULL)
     {
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
     }
+
+    /* Saare naam dynamic array mein jama karo */
+    int capacity = 64;
+    int count = 0;
+    int maxlen = 0;
+    char **names = malloc(capacity * sizeof(char *));
+    if (names == NULL)
+    {
+        perror("malloc failed");
+        closedir(dp);
+        return;
+    }
+
+    struct dirent *entry;
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
             continue;
-        printf("%s\n", entry->d_name);
+
+        /* array bhar jaye to double kar do */
+        if (count == capacity)
+        {
+            capacity *= 2;
+            char **tmp = realloc(names, capacity * sizeof(char *));
+            if (tmp == NULL)
+            {
+                perror("realloc failed");
+                break;
+            }
+            names = tmp;
+        }
+
+        names[count] = strdup(entry->d_name);
+        if (names[count] == NULL)
+        {
+            perror("strdup failed");
+            break;
+        }
+
+        int len = (int)strlen(names[count]);
+        if (len > maxlen)
+            maxlen = len;
+        count++;
     }
     if (errno != 0)
         perror("readdir failed");
     closedir(dp);
+
+    display_columns(names, count, maxlen);
+
+    /* memory wapas do */
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
+
+/* "Down then across" printing */
+void display_columns(char **names, int count, int maxlen)
+{
+    if (count == 0)
+        return;
+
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2; /* 2 spaces columns ke darmiyan */
+    int num_cols = term_width / col_width;
+    if (num_cols < 1)
+        num_cols = 1;
+    if (num_cols > count)
+        num_cols = count;
+    int num_rows = (count + num_cols - 1) / num_cols; /* ceiling division */
+
+    for (int r = 0; r < num_rows; r++)
+    {
+        for (int c = 0; c < num_cols; c++)
+        {
+            int idx = c * num_rows + r; /* column-major index */
+            if (idx >= count)
+                break;
+
+            /* is row ka aakhri item ho to padding nahi */
+            int is_last = (c == num_cols - 1) || (idx + num_rows >= count);
+            if (is_last)
+                printf("%s", names[idx]);
+            else
+                printf("%-*s", col_width, names[idx]);
+        }
+        printf("\n");
+    }
 }
 
 /* st_mode ko "drwxr-xr-x" jaisi string mein badalta hai */
 void mode_to_string(mode_t mode, char *str)
 {
-    /* 1) file type */
     if (S_ISREG(mode))       str[0] = '-';
     else if (S_ISDIR(mode))  str[0] = 'd';
     else if (S_ISLNK(mode))  str[0] = 'l';
@@ -96,7 +185,6 @@ void mode_to_string(mode_t mode, char *str)
     else if (S_ISSOCK(mode)) str[0] = 's';
     else                     str[0] = '?';
 
-    /* 2) rwx bits: owner, group, others */
     str[1] = (mode & S_IRUSR) ? 'r' : '-';
     str[2] = (mode & S_IWUSR) ? 'w' : '-';
     str[3] = (mode & S_IXUSR) ? 'x' : '-';
@@ -107,7 +195,6 @@ void mode_to_string(mode_t mode, char *str)
     str[8] = (mode & S_IWOTH) ? 'w' : '-';
     str[9] = (mode & S_IXOTH) ? 'x' : '-';
 
-    /* 3) special bits: setuid, setgid, sticky */
     if (mode & S_ISUID) str[3] = (mode & S_IXUSR) ? 's' : 'S';
     if (mode & S_ISGID) str[6] = (mode & S_IXGRP) ? 's' : 'S';
     if (mode & S_ISVTX) str[9] = (mode & S_IXOTH) ? 't' : 'T';
@@ -115,7 +202,6 @@ void mode_to_string(mode_t mode, char *str)
     str[10] = '\0';
 }
 
-/* uid -> naam (agar naam na mile to number print) */
 const char *user_name(uid_t uid, char *buf)
 {
     struct passwd *pw = getpwuid(uid);
@@ -148,7 +234,6 @@ void do_ls_long(const char *dir)
     int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
     long total = 0;
 
-    /* PASS 1: har column ki sabse bari width nikalo (alignment ke liye) */
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
@@ -171,9 +256,8 @@ void do_ls_long(const char *dir)
         if (len > w_size) w_size = len;
     }
 
-    printf("total %ld\n", total / 2); /* st_blocks 512-byte units mein hota hai */
+    printf("total %ld\n", total / 2);
 
-    /* PASS 2: ab asal printing */
     rewinddir(dp);
     while ((entry = readdir(dp)) != NULL)
     {
@@ -186,7 +270,6 @@ void do_ls_long(const char *dir)
         char perms[11];
         mode_to_string(st.st_mode, perms);
 
-        /* ctime() = "Thu Oct 11 21:23:45 2026\n" -> 4th char se 12 chars = "Oct 11 21:23" */
         char timebuf[13];
         char *t = ctime(&st.st_mtime);
         strncpy(timebuf, t + 4, 12);
@@ -201,7 +284,6 @@ void do_ls_long(const char *dir)
                timebuf,
                entry->d_name);
 
-        /* symbolic link ho to "-> target" bhi dikhao */
         if (S_ISLNK(st.st_mode))
         {
             char target[PATH_MAX];
