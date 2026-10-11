@@ -1,6 +1,6 @@
 /*
-* Programming Assignment 02: lsv1.2.0
-* Added: default multi-column display ("down then across")
+* Programming Assignment 02: lsv1.3.0
+* Added: -x (horizontal "across" column display)
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,9 +17,18 @@
 
 extern int errno;
 
-void do_ls(const char *dir, int long_flag);
+/* Display mode ka state: koi ek mode hi active hota hai */
+typedef enum
+{
+    MODE_DEFAULT,    /* down then across */
+    MODE_LONG,       /* -l */
+    MODE_HORIZONTAL  /* -x */
+} DisplayMode;
+
+void do_ls(const char *dir, DisplayMode mode);
 void do_ls_long(const char *dir);
 void display_columns(char **names, int count, int maxlen);
+void display_horizontal(char **names, int count, int maxlen);
 int get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
 const char *user_name(uid_t uid, char *buf);
@@ -28,31 +37,34 @@ const char *group_name(gid_t gid, char *buf);
 int main(int argc, char *argv[])
 {
     int opt;
-    int long_flag = 0;
+    DisplayMode mode = MODE_DEFAULT;
 
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         switch (opt)
         {
         case 'l':
-            long_flag = 1;
+            mode = MODE_LONG;
+            break;
+        case 'x':
+            mode = MODE_HORIZONTAL;
             break;
         default:
-            fprintf(stderr, "Usage: %s [-l] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [dir...]\n", argv[0]);
             return 1;
         }
     }
 
     if (optind == argc)
     {
-        do_ls(".", long_flag);
+        do_ls(".", mode);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], long_flag);
+            do_ls(argv[i], mode);
             puts("");
         }
     }
@@ -68,9 +80,10 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
-void do_ls(const char *dir, int long_flag)
+void do_ls(const char *dir, DisplayMode mode)
 {
-    if (long_flag)
+    /* long listing apna kaam khud karti hai */
+    if (mode == MODE_LONG)
     {
         do_ls_long(dir);
         return;
@@ -131,7 +144,11 @@ void do_ls(const char *dir, int long_flag)
         perror("readdir failed");
     closedir(dp);
 
-    display_columns(names, count, maxlen);
+    /* Flag dekh kar sahi display function chunna */
+    if (mode == MODE_HORIZONTAL)
+        display_horizontal(names, count, maxlen);
+    else
+        display_columns(names, count, maxlen);
 
     /* memory wapas do */
     for (int i = 0; i < count; i++)
@@ -139,7 +156,7 @@ void do_ls(const char *dir, int long_flag)
     free(names);
 }
 
-/* "Down then across" printing */
+/* "Down then across" printing (default mode) */
 void display_columns(char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -162,7 +179,6 @@ void display_columns(char **names, int count, int maxlen)
             if (idx >= count)
                 break;
 
-            /* is row ka aakhri item ho to padding nahi */
             int is_last = (c == num_cols - 1) || (idx + num_rows >= count);
             if (is_last)
                 printf("%s", names[idx]);
@@ -171,6 +187,30 @@ void display_columns(char **names, int count, int maxlen)
         }
         printf("\n");
     }
+}
+
+/* "Across" printing (-x): left se right, line bhar jaye to neeche */
+void display_horizontal(char **names, int count, int maxlen)
+{
+    if (count == 0)
+        return;
+
+    int term_width = get_terminal_width();
+    int col_width = maxlen + 2;
+    int pos = 0; /* current line par ab tak kitni jagah use hui */
+
+    for (int i = 0; i < count; i++)
+    {
+        /* agar ye naam is line mein na samaye to nayi line shuru karo */
+        if (pos > 0 && pos + col_width > term_width)
+        {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        pos += col_width;
+    }
+    printf("\n");
 }
 
 /* st_mode ko "drwxr-xr-x" jaisi string mein badalta hai */
