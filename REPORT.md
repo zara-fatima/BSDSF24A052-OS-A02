@@ -30,3 +30,14 @@ The vertical ("down then across") layout is more complex. Before printing anythi
 **Q2. Describe the strategy used to manage the different display modes (-l, -x, default). How did the program decide which function to call?**
 
 I used an enum `DisplayMode` with three values: `MODE_DEFAULT`, `MODE_LONG` and `MODE_HORIZONTAL`. The `getopt()` loop in `main` sets this variable when it sees `-l` or `-x` (if both are given, the last one wins). The variable is passed to `do_ls()`. Inside `do_ls()`, if the mode is `MODE_LONG` it calls `do_ls_long()`; otherwise it reads all names into a dynamic array and then calls `display_horizontal()` for `MODE_HORIZONTAL`, or `display_columns()` (down then across) for the default mode.
+
+
+## Feature 5: Alphabetical Sort (v1.4.0)
+
+**Q1. Why is it necessary to read all directory entries into memory before sorting? What are the drawbacks for directories with millions of files?**
+
+`readdir()` returns entries one at a time in whatever order the filesystem stores them, which is not alphabetical. To sort, the program must compare every entry with others, so all names must be available at the same time. A sorting algorithm cannot place an entry correctly until it has seen all entries (the first name returned could belong at the very end). The drawback with millions of files is high memory use (every name is a separate heap string plus a pointer in the array), a delay before the first line is printed (nothing can be shown until reading and sorting finish), and extra CPU time for sorting (O(n log n) comparisons). Reallocations of the growing array also add cost.
+
+**Q2. Explain the purpose and signature of the comparison function required by qsort(). How does it work, and why must it take const void * arguments?**
+
+`qsort()` is a generic function that does not know the type of the elements it sorts, so it needs a comparison function to decide the order of two elements. The signature is `int compare(const void *a, const void *b)`. It returns a negative number if the first element should come before the second, zero if they are equal, and a positive number if the first should come after. In my code the array holds `char *`, so `qsort` passes pointers to the elements, i.e. `char **`. The function casts `a` and `b` to `const char **`, dereferences them to get the strings and returns `strcmp(s1, s2)`. The parameters are `const void *` because `void *` can hold a pointer to any type, which lets one `qsort` work for ints, structs or strings, and `const` promises that the comparison will not modify the data.
