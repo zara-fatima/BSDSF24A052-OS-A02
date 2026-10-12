@@ -1,6 +1,6 @@
 /*
-* Programming Assignment 02: lsv1.3.0
-* Added: -x (horizontal "across" column display)
+* Programming Assignment 02: lsv1.4.0
+* Added: alphabetical sorting (qsort) for all display modes
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +17,6 @@
 
 extern int errno;
 
-/* Display mode ka state: koi ek mode hi active hota hai */
 typedef enum
 {
     MODE_DEFAULT,    /* down then across */
@@ -26,7 +25,8 @@ typedef enum
 } DisplayMode;
 
 void do_ls(const char *dir, DisplayMode mode);
-void do_ls_long(const char *dir);
+int compare_names(const void *a, const void *b);
+void do_ls_long(const char *dir, char **names, int count);
 void display_columns(char **names, int count, int maxlen);
 void display_horizontal(char **names, int count, int maxlen);
 int get_terminal_width(void);
@@ -76,19 +76,25 @@ int get_terminal_width(void)
 {
     struct winsize w;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0)
-        return 80; /* fallback: ioctl fail ho (jaise pipe) to 80 */
+        return 80;
     return w.ws_col;
+}
+
+/*
+* qsort ka comparison function.
+* qsort array ke har element ka address deta hai. Hamara array char* ka hai,
+* is liye har element ka address char** hota hai. Isliye pehle (const char **)
+* mein cast karte hain, phir * lagakar asli string (char *) nikalte hain.
+*/
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
 }
 
 void do_ls(const char *dir, DisplayMode mode)
 {
-    /* long listing apna kaam khud karti hai */
-    if (mode == MODE_LONG)
-    {
-        do_ls_long(dir);
-        return;
-    }
-
     DIR *dp = opendir(dir);
     if (dp == NULL)
     {
@@ -115,7 +121,6 @@ void do_ls(const char *dir, DisplayMode mode)
         if (entry->d_name[0] == '.')
             continue;
 
-        /* array bhar jaye to double kar do */
         if (count == capacity)
         {
             capacity *= 2;
@@ -144,8 +149,13 @@ void do_ls(const char *dir, DisplayMode mode)
         perror("readdir failed");
     closedir(dp);
 
-    /* Flag dekh kar sahi display function chunna */
-    if (mode == MODE_HORIZONTAL)
+    /* SORT: padhne ke baad, display se pehle */
+    qsort(names, count, sizeof(char *), compare_names);
+
+    /* Ab sorted array sahi display function ko do */
+    if (mode == MODE_LONG)
+        do_ls_long(dir, names, count);
+    else if (mode == MODE_HORIZONTAL)
         display_horizontal(names, count, maxlen);
     else
         display_columns(names, count, maxlen);
@@ -163,19 +173,19 @@ void display_columns(char **names, int count, int maxlen)
         return;
 
     int term_width = get_terminal_width();
-    int col_width = maxlen + 2; /* 2 spaces columns ke darmiyan */
+    int col_width = maxlen + 2;
     int num_cols = term_width / col_width;
     if (num_cols < 1)
         num_cols = 1;
     if (num_cols > count)
         num_cols = count;
-    int num_rows = (count + num_cols - 1) / num_cols; /* ceiling division */
+    int num_rows = (count + num_cols - 1) / num_cols;
 
     for (int r = 0; r < num_rows; r++)
     {
         for (int c = 0; c < num_cols; c++)
         {
-            int idx = c * num_rows + r; /* column-major index */
+            int idx = c * num_rows + r;
             if (idx >= count)
                 break;
 
@@ -189,7 +199,7 @@ void display_columns(char **names, int count, int maxlen)
     }
 }
 
-/* "Across" printing (-x): left se right, line bhar jaye to neeche */
+/* "Across" printing (-x) */
 void display_horizontal(char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -197,11 +207,10 @@ void display_horizontal(char **names, int count, int maxlen)
 
     int term_width = get_terminal_width();
     int col_width = maxlen + 2;
-    int pos = 0; /* current line par ab tak kitni jagah use hui */
+    int pos = 0;
 
     for (int i = 0; i < count; i++)
     {
-        /* agar ye naam is line mein na samaye to nayi line shuru karo */
         if (pos > 0 && pos + col_width > term_width)
         {
             printf("\n");
@@ -258,27 +267,19 @@ const char *group_name(gid_t gid, char *buf)
     return buf;
 }
 
-void do_ls_long(const char *dir)
+/* Long listing: ab names[] pehle se sorted milta hai, khud readdir nahi karta */
+void do_ls_long(const char *dir, char **names, int count)
 {
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
-    struct dirent *entry;
     struct stat st;
     char path[PATH_MAX];
     char ub[32], gb[32], nb[32];
     int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
     long total = 0;
 
-    while ((entry = readdir(dp)) != NULL)
+    /* PASS 1: column widths aur total blocks */
+    for (int i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
         {
             perror(path);
@@ -298,12 +299,10 @@ void do_ls_long(const char *dir)
 
     printf("total %ld\n", total / 2);
 
-    rewinddir(dp);
-    while ((entry = readdir(dp)) != NULL)
+    /* PASS 2: printing (sorted order mein) */
+    for (int i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
             continue;
 
@@ -322,7 +321,7 @@ void do_ls_long(const char *dir)
                w_group, group_name(st.st_gid, gb),
                w_size, (long long)st.st_size,
                timebuf,
-               entry->d_name);
+               names[i]);
 
         if (S_ISLNK(st.st_mode))
         {
@@ -336,5 +335,4 @@ void do_ls_long(const char *dir)
         }
         printf("\n");
     }
-    closedir(dp);
 }
