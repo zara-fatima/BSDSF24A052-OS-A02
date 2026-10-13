@@ -41,3 +41,14 @@ I used an enum `DisplayMode` with three values: `MODE_DEFAULT`, `MODE_LONG` and 
 **Q2. Explain the purpose and signature of the comparison function required by qsort(). How does it work, and why must it take const void * arguments?**
 
 `qsort()` is a generic function that does not know the type of the elements it sorts, so it needs a comparison function to decide the order of two elements. The signature is `int compare(const void *a, const void *b)`. It returns a negative number if the first element should come before the second, zero if they are equal, and a positive number if the first should come after. In my code the array holds `char *`, so `qsort` passes pointers to the elements, i.e. `char **`. The function casts `a` and `b` to `const char **`, dereferences them to get the strings and returns `strcmp(s1, s2)`. The parameters are `const void *` because `void *` can hold a pointer to any type, which lets one `qsort` work for ints, structs or strings, and `const` promises that the comparison will not modify the data.
+
+
+## Feature 6: Colorized Output (v1.5.0)
+
+**Q1. How do ANSI escape codes work to produce color in a Linux terminal? Show the code sequence for printing text in green.**
+
+ANSI escape codes are special character sequences that start with the ESC character (octal `\033`, hex `0x1B`) followed by `[`, one or more numbers and a final letter. The terminal does not print them; it interprets them as formatting commands. The final letter `m` means "set graphics mode", and the numbers select the style: `0` is reset, `7` is reverse video, `31` is red, `32` is green, `34` is blue, `35` is magenta. To print green text: `printf("\033[0;32mHello\033[0m\n");`. The first sequence `\033[0;32m` switches the color to green, then the text is printed, and `\033[0m` resets the color to the default so the following output is not colored.
+
+**Q2. To color an executable file, which bits in st_mode must be checked to determine if a file is executable by the owner, group or others?**
+
+The execute permission bits of `st_mode` are `S_IXUSR` (0100) for the owner, `S_IXGRP` (0010) for the group and `S_IXOTH` (0001) for others. A file is executable if any of them is set: `st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)` is non-zero. In my code this check is only done for regular files (`S_ISREG`), because directories also have the execute (search) bit set but must be colored blue, not green.
