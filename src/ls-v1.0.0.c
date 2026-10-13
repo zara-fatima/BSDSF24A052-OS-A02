@@ -1,6 +1,6 @@
 /*
-* Programming Assignment 02: lsv1.4.0
-* Added: alphabetical sorting (qsort) for all display modes
+* Programming Assignment 02: lsv1.5.0
+* Added: colorized output based on file type (ANSI escape codes)
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +17,17 @@
 
 extern int errno;
 
+/* ANSI escape codes */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"   /* directory */
+#define COLOR_GREEN   "\033[0;32m"   /* executable */
+#define COLOR_RED     "\033[0;31m"   /* tarballs / archives */
+#define COLOR_PINK    "\033[0;35m"   /* symbolic link */
+#define COLOR_REVERSE "\033[7m"      /* special files */
+
+/* 1 = rang use karo (sirf jab output terminal par ja raha ho) */
+static int use_color = 0;
+
 typedef enum
 {
     MODE_DEFAULT,    /* down then across */
@@ -27,9 +38,12 @@ typedef enum
 void do_ls(const char *dir, DisplayMode mode);
 int compare_names(const void *a, const void *b);
 void do_ls_long(const char *dir, char **names, int count);
-void display_columns(char **names, int count, int maxlen);
-void display_horizontal(char **names, int count, int maxlen);
+void display_columns(const char *dir, char **names, int count, int maxlen);
+void display_horizontal(const char *dir, char **names, int count, int maxlen);
 int get_terminal_width(void);
+const char *get_color(mode_t mode, const char *name);
+void print_colored(const char *name, mode_t mode);
+void print_name(const char *dir, const char *name, int width);
 void mode_to_string(mode_t mode, char *str);
 const char *user_name(uid_t uid, char *buf);
 const char *group_name(gid_t gid, char *buf);
@@ -54,6 +68,9 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
+
+    /* pipe ya file mein output ho to rang ke code na chhapein */
+    use_color = isatty(STDOUT_FILENO);
 
     if (optind == argc)
     {
@@ -80,12 +97,57 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
+/* file type dekh kar rang ka code wapas karta hai (NULL = koi rang nahi) */
+const char *get_color(mode_t mode, const char *name)
+{
+    if (S_ISLNK(mode))
+        return COLOR_PINK;
+    if (S_ISDIR(mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISSOCK(mode) || S_ISFIFO(mode))
+        return COLOR_REVERSE;
+    if (S_ISREG(mode))
+    {
+        if (strstr(name, ".tar") || strstr(name, ".gz") || strstr(name, ".zip"))
+            return COLOR_RED;
+        if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+            return COLOR_GREEN;
+    }
+    return NULL;
+}
+
+/* naam ko uske rang mein print karo (padding ke baghair) */
+void print_colored(const char *name, mode_t mode)
+{
+    const char *color = use_color ? get_color(mode, name) : NULL;
+    if (color)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+}
+
 /*
-* qsort ka comparison function.
-* qsort array ke har element ka address deta hai. Hamara array char* ka hai,
-* is liye har element ka address char** hota hai. Isliye pehle (const char **)
-* mein cast karte hain, phir * lagakar asli string (char *) nikalte hain.
+* Naam print karo: lstat se type pata karo, rang lagao, phir width tak
+* spaces se pad karo. Padding hum khud karte hain kyunke printf("%-*s") escape
+* codes ko bhi width mein ginta, aur alignment kharab ho jata.
 */
+void print_name(const char *dir, const char *name, int width)
+{
+    char path[PATH_MAX];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (lstat(path, &st) == 0)
+        print_colored(name, st.st_mode);
+    else
+        printf("%s", name);
+
+    int pad = width - (int)strlen(name);
+    if (pad > 0)
+        printf("%*s", pad, "");
+}
+
+/* qsort ke liye comparison function */
 int compare_names(const void *a, const void *b)
 {
     const char *s1 = *(const char **)a;
@@ -102,7 +164,6 @@ void do_ls(const char *dir, DisplayMode mode)
         return;
     }
 
-    /* Saare naam dynamic array mein jama karo */
     int capacity = 64;
     int count = 0;
     int maxlen = 0;
@@ -149,25 +210,22 @@ void do_ls(const char *dir, DisplayMode mode)
         perror("readdir failed");
     closedir(dp);
 
-    /* SORT: padhne ke baad, display se pehle */
     qsort(names, count, sizeof(char *), compare_names);
 
-    /* Ab sorted array sahi display function ko do */
     if (mode == MODE_LONG)
         do_ls_long(dir, names, count);
     else if (mode == MODE_HORIZONTAL)
-        display_horizontal(names, count, maxlen);
+        display_horizontal(dir, names, count, maxlen);
     else
-        display_columns(names, count, maxlen);
+        display_columns(dir, names, count, maxlen);
 
-    /* memory wapas do */
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
 }
 
 /* "Down then across" printing (default mode) */
-void display_columns(char **names, int count, int maxlen)
+void display_columns(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
         return;
@@ -190,17 +248,14 @@ void display_columns(char **names, int count, int maxlen)
                 break;
 
             int is_last = (c == num_cols - 1) || (idx + num_rows >= count);
-            if (is_last)
-                printf("%s", names[idx]);
-            else
-                printf("%-*s", col_width, names[idx]);
+            print_name(dir, names[idx], is_last ? 0 : col_width);
         }
         printf("\n");
     }
 }
 
 /* "Across" printing (-x) */
-void display_horizontal(char **names, int count, int maxlen)
+void display_horizontal(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
         return;
@@ -216,7 +271,7 @@ void display_horizontal(char **names, int count, int maxlen)
             printf("\n");
             pos = 0;
         }
-        printf("%-*s", col_width, names[i]);
+        print_name(dir, names[i], col_width);
         pos += col_width;
     }
     printf("\n");
@@ -267,7 +322,7 @@ const char *group_name(gid_t gid, char *buf)
     return buf;
 }
 
-/* Long listing: ab names[] pehle se sorted milta hai, khud readdir nahi karta */
+/* Long listing: names[] pehle se sorted milta hai */
 void do_ls_long(const char *dir, char **names, int count)
 {
     struct stat st;
@@ -314,14 +369,17 @@ void do_ls_long(const char *dir, char **names, int count)
         strncpy(timebuf, t + 4, 12);
         timebuf[12] = '\0';
 
-        printf("%s %*ld %-*s %-*s %*lld %s %s",
+        /* naam se pehle ka hissa */
+        printf("%s %*ld %-*s %-*s %*lld %s ",
                perms,
                w_link, (long)st.st_nlink,
                w_user, user_name(st.st_uid, ub),
                w_group, group_name(st.st_gid, gb),
                w_size, (long long)st.st_size,
-               timebuf,
-               names[i]);
+               timebuf);
+
+        /* naam rang ke saath */
+        print_colored(names[i], st.st_mode);
 
         if (S_ISLNK(st.st_mode))
         {
