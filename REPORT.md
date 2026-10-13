@@ -52,3 +52,14 @@ ANSI escape codes are special character sequences that start with the ESC charac
 **Q2. To color an executable file, which bits in st_mode must be checked to determine if a file is executable by the owner, group or others?**
 
 The execute permission bits of `st_mode` are `S_IXUSR` (0100) for the owner, `S_IXGRP` (0010) for the group and `S_IXOTH` (0001) for others. A file is executable if any of them is set: `st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)` is non-zero. In my code this check is only done for regular files (`S_ISREG`), because directories also have the execute (search) bit set but must be colored blue, not green.
+
+
+## Feature 7: Recursive Listing -R (v1.6.0)
+
+**Q1. In a recursive function, what is a "base case"? What is the base case that stops the recursion in your recursive ls?**
+
+A base case is the condition under which a recursive function stops calling itself and returns directly; without it the function would call itself forever. In my recursive `ls`, the base case is a directory that contains no subdirectories (or one that cannot be opened). For such a directory, the loop that checks each entry with `lstat()` and `S_ISDIR()` never finds a directory to descend into, so no further `do_ls()` call is made and the function simply prints its entries and returns to the caller. Because every recursive call goes one level deeper into a finite directory tree, the recursion always ends. Skipping `.` and `..` is also essential, since otherwise a directory would call itself endlessly. Using `lstat()` means symbolic links are not followed as directories, which avoids infinite loops from link cycles.
+
+**Q2. Why is it essential to construct a full path before making a recursive call? What would happen if you simply called do_ls("subdir") from within do_ls("parent_dir")?**
+
+`readdir()` returns only the entry name (e.g. `subdir`), not its location. All file system calls (`opendir`, `lstat`) interpret a relative name starting from the current working directory of the process, not from the directory being listed. If I called `do_ls("subdir")` from inside `do_ls("parent_dir")`, the program would look for `./subdir` in the directory where it was started. Either that path does not exist, so `opendir` fails with "Cannot open directory" and the subdirectory is never listed, or, worse, a different directory with the same name in the current directory would be listed by mistake. Building the full path `parent_dir/subdir` (with `build_path()`) makes the call independent of the current working directory and always points to the correct directory. It also makes the printed header (e.g. `parent_dir/subdir:`) correct.
