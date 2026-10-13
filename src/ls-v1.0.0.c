@@ -1,6 +1,6 @@
 /*
-* Programming Assignment 02: lsv1.5.0
-* Added: colorized output based on file type (ANSI escape codes)
+* Programming Assignment 02: lsv1.6.0
+* Added: -R (recursive listing)
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +25,6 @@ extern int errno;
 #define COLOR_PINK    "\033[0;35m"   /* symbolic link */
 #define COLOR_REVERSE "\033[7m"      /* special files */
 
-/* 1 = rang use karo (sirf jab output terminal par ja raha ho) */
 static int use_color = 0;
 
 typedef enum
@@ -35,7 +34,8 @@ typedef enum
     MODE_HORIZONTAL  /* -x */
 } DisplayMode;
 
-void do_ls(const char *dir, DisplayMode mode);
+void do_ls(const char *dir, DisplayMode mode, int recursive);
+void build_path(char *dest, size_t size, const char *dir, const char *name);
 int compare_names(const void *a, const void *b);
 void do_ls_long(const char *dir, char **names, int count);
 void display_columns(const char *dir, char **names, int count, int maxlen);
@@ -52,8 +52,9 @@ int main(int argc, char *argv[])
 {
     int opt;
     DisplayMode mode = MODE_DEFAULT;
+    int recursive = 0; /* -R ka flag */
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
@@ -63,32 +64,35 @@ int main(int argc, char *argv[])
         case 'x':
             mode = MODE_HORIZONTAL;
             break;
+        case 'R':
+            recursive = 1;
+            break;
         default:
-            fprintf(stderr, "Usage: %s [-l | -x] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [-R] [dir...]\n", argv[0]);
             return 1;
         }
     }
 
-    /* pipe ya file mein output ho to rang ke code na chhapein */
     use_color = isatty(STDOUT_FILENO);
 
     if (optind == argc)
     {
-        do_ls(".", mode);
+        do_ls(".", mode, recursive);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
-            printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], mode);
+            /* -R mein header do_ls khud print karta hai */
+            if (!recursive)
+                printf("Directory listing of %s : \n", argv[i]);
+            do_ls(argv[i], mode, recursive);
             puts("");
         }
     }
     return 0;
 }
 
-/* Terminal ki width (columns mein) maloom karo */
 int get_terminal_width(void)
 {
     struct winsize w;
@@ -97,7 +101,6 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
-/* file type dekh kar rang ka code wapas karta hai (NULL = koi rang nahi) */
 const char *get_color(mode_t mode, const char *name)
 {
     if (S_ISLNK(mode))
@@ -116,7 +119,6 @@ const char *get_color(mode_t mode, const char *name)
     return NULL;
 }
 
-/* naam ko uske rang mein print karo (padding ke baghair) */
 void print_colored(const char *name, mode_t mode)
 {
     const char *color = use_color ? get_color(mode, name) : NULL;
@@ -126,11 +128,6 @@ void print_colored(const char *name, mode_t mode)
         printf("%s", name);
 }
 
-/*
-* Naam print karo: lstat se type pata karo, rang lagao, phir width tak
-* spaces se pad karo. Padding hum khud karte hain kyunke printf("%-*s") escape
-* codes ko bhi width mein ginta, aur alignment kharab ho jata.
-*/
 void print_name(const char *dir, const char *name, int width)
 {
     char path[PATH_MAX];
@@ -147,7 +144,6 @@ void print_name(const char *dir, const char *name, int width)
         printf("%*s", pad, "");
 }
 
-/* qsort ke liye comparison function */
 int compare_names(const void *a, const void *b)
 {
     const char *s1 = *(const char **)a;
@@ -155,7 +151,20 @@ int compare_names(const void *a, const void *b)
     return strcmp(s1, s2);
 }
 
-void do_ls(const char *dir, DisplayMode mode)
+/*
+* Parent directory aur entry ke naam se poora path banata hai: "dir/name".
+* Agar dir pehle se '/' par khatam ho (jaise "src/" ya "/") to dobara '/' nahi lagata.
+*/
+void build_path(char *dest, size_t size, const char *dir, const char *name)
+{
+    size_t len = strlen(dir);
+    if (len > 0 && dir[len - 1] == '/')
+        snprintf(dest, size, "%s%s", dir, name);
+    else
+        snprintf(dest, size, "%s/%s", dir, name);
+}
+
+void do_ls(const char *dir, DisplayMode mode, int recursive)
 {
     DIR *dp = opendir(dir);
     if (dp == NULL)
@@ -163,6 +172,10 @@ void do_ls(const char *dir, DisplayMode mode)
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
     }
+
+    /* -R: pehle directory ka naam print karo */
+    if (recursive)
+        printf("%s:\n", dir);
 
     int capacity = 64;
     int count = 0;
@@ -219,12 +232,33 @@ void do_ls(const char *dir, DisplayMode mode)
     else
         display_columns(dir, names, count, maxlen);
 
+    /* RECURSION: har entry ko dekho, directory ho to uske andar jao */
+    if (recursive)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            char path[PATH_MAX];
+            struct stat st;
+
+            build_path(path, sizeof(path), dir, names[i]); /* poora path */
+            if (lstat(path, &st) == -1)
+                continue;
+
+            /* lstat ki wajah se symlink directory nahi gina jata (infinite loop se bachat) */
+            if (S_ISDIR(st.st_mode) &&
+                strcmp(names[i], ".") != 0 && strcmp(names[i], "..") != 0)
+            {
+                printf("\n");
+                do_ls(path, mode, recursive); /* recursive call */
+            }
+        }
+    }
+
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
 }
 
-/* "Down then across" printing (default mode) */
 void display_columns(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -254,7 +288,6 @@ void display_columns(const char *dir, char **names, int count, int maxlen)
     }
 }
 
-/* "Across" printing (-x) */
 void display_horizontal(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -277,7 +310,6 @@ void display_horizontal(const char *dir, char **names, int count, int maxlen)
     printf("\n");
 }
 
-/* st_mode ko "drwxr-xr-x" jaisi string mein badalta hai */
 void mode_to_string(mode_t mode, char *str)
 {
     if (S_ISREG(mode))       str[0] = '-';
@@ -322,7 +354,6 @@ const char *group_name(gid_t gid, char *buf)
     return buf;
 }
 
-/* Long listing: names[] pehle se sorted milta hai */
 void do_ls_long(const char *dir, char **names, int count)
 {
     struct stat st;
@@ -331,7 +362,6 @@ void do_ls_long(const char *dir, char **names, int count)
     int w_link = 0, w_user = 0, w_group = 0, w_size = 0;
     long total = 0;
 
-    /* PASS 1: column widths aur total blocks */
     for (int i = 0; i < count; i++)
     {
         snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
@@ -354,7 +384,6 @@ void do_ls_long(const char *dir, char **names, int count)
 
     printf("total %ld\n", total / 2);
 
-    /* PASS 2: printing (sorted order mein) */
     for (int i = 0; i < count; i++)
     {
         snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
@@ -369,7 +398,6 @@ void do_ls_long(const char *dir, char **names, int count)
         strncpy(timebuf, t + 4, 12);
         timebuf[12] = '\0';
 
-        /* naam se pehle ka hissa */
         printf("%s %*ld %-*s %-*s %*lld %s ",
                perms,
                w_link, (long)st.st_nlink,
@@ -378,7 +406,6 @@ void do_ls_long(const char *dir, char **names, int count)
                w_size, (long long)st.st_size,
                timebuf);
 
-        /* naam rang ke saath */
         print_colored(names[i], st.st_mode);
 
         if (S_ISLNK(st.st_mode))
